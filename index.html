@@ -131,7 +131,7 @@ details.fold>.reset{margin:12px 16px 14px}
     <details class="fold" id="fold">
       <summary>Zoom et position de l'affiche</summary>
       <div class="sliders">
-        <div class="sl"><span class="lbl">Zoom</span><output id="o_zoom">100 %</output><input type="range" id="zoom" min="100" max="500" step="0.1" value="100"></div>
+        <div class="sl"><span class="lbl">Zoom</span><output id="o_zoom">100 %</output><input type="range" id="zoom" min="100" max="200" step="0.1" value="100"></div>
         <div class="sl" id="slx"><span class="lbl">Gauche ↔ droite</span><output id="o_px">50</output><input type="range" id="px" min="0" max="100" step="0.1" value="50"></div>
         <div class="sl" id="sly"><span class="lbl">Haut ↔ bas</span><output id="o_py">50</output><input type="range" id="py" min="0" max="100" step="0.1" value="50"></div>
       </div>
@@ -1630,7 +1630,10 @@ var W = 1080, H = 1920;
 
 /* ---------- Réglages relevés dans le PSD (pixels sur 1080 × 1920) ---------- */
 var CFG = {
-  poster:  { x:125.44, y:188.7, w:830.12, h:1246.8 },     /* cadre de l'affiche */
+  /* cadre de l'affiche : gauche et largeur fixes ; la hauteur suit le format de l'affiche chargée,
+     au plus celle du PSD (1246,8 px, affiche 2:3), et le cadre reste centré sur cy (812,1 = 188,7 + 1246,8/2,
+     même centre mesuré sur l'exemple en 120 × 160 : bords 247 et 1376). hMin : format 16:9 (830,12 × 9/16). */
+  poster:  { x:125.44, y:188.7, w:830.12, h:1246.8, cy:812.1, hMin:467 },
   bg:      { x:-193.6, y:-129.6, w:1467.2, h:2204.4, sigma:380 },   /* affiche floutée du fond (flou gaussien 300 px) */
   shadow:  { alpha:0.36, fall:106 },     /* ombre douce autour de l'affiche */
   glow:    { alpha:0.18 },/* lueur jaune externe */
@@ -1642,6 +1645,8 @@ var CFG = {
   tab:     [[0,1],[3,1],[7,.92],[15,.8],[25,.61],[45,.35],[85,.08],[125,.02],[150,0]],
   logos:   { indes:[449,1738], club:[440,1741], aime:[443,1738] }
 };
+/* Cadre actuel de l'affiche (y et h suivent automatiquement le format de l'affiche chargée) */
+var FR = { x:CFG.poster.x, y:CFG.poster.y, w:CFG.poster.w, h:CFG.poster.h };
 var FONT = "'stratos','Barlow Semi Condensed','Arial Narrow',sans-serif";
 
 var A = {
@@ -1723,11 +1728,33 @@ Promise.all(Object.keys(A).map(function(k){ return loadImg(A[k]).then(function(i
 
 /* ---------- L'affiche de l'utilisateur ---------- */
 var photo = null, view = { zoom:1, px:0.5, py:0.5 };
-var poster = mk(Math.round(CFG.poster.w), Math.round(CFG.poster.h));   /* affiche recadrée : sert seulement au fond flouté */
+var poster = mk(Math.round(FR.w), Math.round(FR.h));   /* affiche recadrée : sert seulement au fond flouté */
+/* Hauteur du cadre : bornée entre hMin et la hauteur du PSD, toujours centrée sur cy */
+function setFrameH(h){
+  var C = CFG.poster;
+  FR.h = clamp(+h || C.h, C.hMin, C.h); FR.y = C.cy - FR.h/2;
+  var ph = Math.round(FR.h); if (poster.height !== ph) poster.height = ph;
+}
+/* Échelle de l'affiche : sa largeur suit la largeur du cadre × zoom. Le cadre grandit en hauteur avec elle
+   (syncFrame), donc rien n'est rogné en haut et en bas tant que le cadre n'a pas atteint la hauteur du PSD ;
+   au-delà, ou pour une image plus large que 16:9, on remplit le cadre. */
+function photoScale(pw, ph){
+  var iw = photo.naturalWidth || photo.width, ih = photo.naturalHeight || photo.height;
+  return Math.max(pw/iw * view.zoom, ph/ih);
+}
+/* Le cadre suit l'affiche zoomée : hauteur = hauteur d'origine × zoom, plafonnée à celle du PSD.
+   Gauche et droite ne bougent jamais. */
+function syncFrame(){ setFrameH(naturalH() * view.zoom); }
+/* Hauteur qui respecte le format d'origine de l'affiche (largeur du cadre fixe) */
+function naturalH(){
+  if (!photo) return CFG.poster.h;
+  var iw = photo.naturalWidth || photo.width, ih = photo.naturalHeight || photo.height;
+  return FR.w * ih / iw;
+}
 /* Position de la photo dans une boîte pw × ph, selon le zoom et le cadrage */
 function photoRect(pw, ph){
   var iw = photo.naturalWidth || photo.width, ih = photo.naturalHeight || photo.height;
-  var s = Math.max(pw/iw, ph/ih) * view.zoom, sw = iw*s, sh = ih*s;
+  var s = photoScale(pw, ph), sw = iw*s, sh = ih*s;
   return { dx: -(sw - pw)*view.px, dy: -(sh - ph)*view.py, sw: sw, sh: sh };
 }
 function renderPoster(){
@@ -1743,7 +1770,7 @@ function renderPoster(){
    intermédiaire puis le replacer à x = 125,44 floutait l'image. Aucun traitement
    ne passe par-dessus : les couleurs restent celles du fichier. */
 function drawPosterSharp(c){
-  var P = CFG.poster;
+  var P = FR;
   c.save();
   c.beginPath(); c.rect(P.x, P.y, P.w, P.h); c.clip();
   c.fillStyle = '#000'; c.fillRect(P.x, P.y, P.w, P.h);
@@ -1765,7 +1792,7 @@ function drawPosterSharp(c){
    drawImage réduit l'affiche (~3× pour une affiche HD) sans assez filtrer : les détails fins crénèlent.
    On recalcule donc la zone de l'affiche au pixel près, 150 ms après le dernier mouvement. */
 var hq = { worker:null, off:false, photo:null, srcId:0, key:'', res:null, timer:0, waiting:[] };
-function hqKey(){ return hq.srcId + '|' + view.zoom + '|' + view.px + '|' + view.py; }
+function hqKey(){ return hq.srcId + '|' + FR.h + '|' + view.zoom + '|' + view.px + '|' + view.py; }
 function hqFor(){
   if (photo !== hq.photo){ hq.photo = photo; hq.srcId++; hq.res = null; hq.sent = false; }
   return hq.res && hq.res.key === hqKey() ? hq.res : null;
@@ -1797,7 +1824,7 @@ function hqRun(){
       hq.worker.postMessage({ type:'src', w:iw, h:ih, data:id.data.buffer, id:hq.srcId }, [id.data.buffer]);
       hq.sent = true;
     }
-    var P = CFG.poster, r = photoRect(P.w, P.h), iw2 = photo.naturalWidth || photo.width;
+    var P = FR, r = photoRect(P.w, P.h), iw2 = photo.naturalWidth || photo.width;
     var x0 = Math.floor(P.x), y0 = Math.floor(P.y), x1 = Math.ceil(P.x + P.w), y1 = Math.ceil(P.y + P.h);
     var key = hqKey();
     hq.worker.postMessage({ type:'run', id:hq.srcId, key:key, x0:x0, y0:y0, outW:x1-x0, outH:y1-y0, ox:P.x + r.dx, oy:P.y + r.dy, s:r.sw/iw2 });
@@ -1823,10 +1850,10 @@ function syncSliders(){
   $('py').disabled = offY; $('sly').classList.toggle('off', offY);
   $('zoom').disabled = !photo;
 }
-$('zoom').addEventListener('input', function(){ if (photo) zoomAt(+this.value/100, CFG.poster.x + CFG.poster.w/2, CFG.poster.y + CFG.poster.h/2); });
+$('zoom').addEventListener('input', function(){ if (photo) zoomAt(+this.value/100, FR.x + FR.w/2, FR.y + FR.h/2); });
 $('px').addEventListener('input', function(){ view.px = +this.value/100; schedule(true); });
 $('py').addEventListener('input', function(){ view.py = +this.value/100; schedule(true); });
-$('reset').addEventListener('click', function(){ view = { zoom:1, px:0.5, py:0.5 }; schedule(true); });
+$('reset').addEventListener('click', function(){ view = { zoom:1, px:0.5, py:0.5 }; syncFrame(); schedule(true); });
 
 /* ---------- Composition ---------- */
 var posterDirty = true, queued = false, bgBlur = null;
@@ -1837,14 +1864,19 @@ function compose(){
   ctx.fillStyle = '#000'; ctx.fillRect(0,0,W,H);
   if (!ready) return;
   if (posterDirty){ renderPoster(); bgBlur = null; posterDirty = false; }
-  var P = CFG.poster;
+  var P = FR;
 
   /* 1. affiche floutée : recalculée seulement quand l'affiche ou son cadrage change */
   if (!bgBlur){
     var B = CFG.bg;
     bgBlur = blurCanvas(Math.floor(B.x), Math.floor(B.y), Math.ceil(B.w), Math.ceil(B.h), 0, B.sigma, true, function(x, sc, rx, ry){
+      /* comme le PSD quand on change l'affiche de l'objet dynamique : même largeur et même bord haut,
+         la hauteur suit le format (mesuré sur l'exemple 120 × 160 : écart moyen 4,1 contre 6,1 en remplissage centré).
+         La zone floutée garde la taille du PSD : sous une affiche plus courte, le flou se fond dans le noir
+         comme dans Photoshop (bas de l'exemple : 3 sur 255), sans coupure nette. */
+      var dh = poster.height * B.w / poster.width;
       x.imageSmoothingQuality = 'high';
-      x.drawImage(poster, (B.x - rx)*sc, (B.y - ry)*sc, B.w*sc, B.h*sc);
+      x.drawImage(poster, (B.x - rx)*sc, (B.y - ry)*sc, B.w*sc, dh*sc);
     });
   }
   ctx.imageSmoothingEnabled = true; ctx.imageSmoothingQuality = 'high';
@@ -1859,7 +1891,7 @@ function compose(){
   ctx.drawImage(img.s1,0,0); ctx.drawImage(img.s2,0,1295);
 
   /* 4. ombre portée de l'affiche puis 5. lueur jaune : deux calques préparés une fois */
-  ctx.drawImage(halo.sh,0,0); ctx.drawImage(halo.gl,0,0);
+  drawHalo(halo.sh); drawHalo(halo.gl);
 
   /* 6. affiche + contour 1 px */
   drawPosterSharp(ctx);
@@ -1880,8 +1912,18 @@ function tabAt(d){
   for (var i=1;i<t.length;i++) if (d <= t[i][0]){ var a = t[i-1], b = t[i], u = (d-a[0])/(b[0]-a[0]); u = u*u*(3-2*u)*0.35 + u*0.65; return a[1] + (b[1]-a[1])*u; }
   return 0;
 }
+/* Lueur et ombre sont calculées une fois pour le cadre le plus haut. Pour un cadre plus court,
+   on ne les étire pas (la lueur serait écrasée) : la moitié haute descend et la moitié basse remonte
+   de (hauteur max − hauteur)/2. Le long des côtés les deux moitiés sont identiques (seule compte la
+   distance horizontale), donc la jonction à y = 812 est invisible et la lueur garde le même profil. */
+function drawHalo(c){
+  var d = (CFG.poster.h - FR.h)/2, cy = Math.round(CFG.poster.cy);
+  if (d < 0.01){ ctx.drawImage(c,0,0); return; }
+  ctx.save(); ctx.beginPath(); ctx.rect(0,0,W,cy); ctx.clip(); ctx.drawImage(c,0,d); ctx.restore();
+  ctx.save(); ctx.beginPath(); ctx.rect(0,cy,W,H-cy); ctx.clip(); ctx.drawImage(c,0,-d); ctx.restore();
+}
 function buildHalo(){
-  var P = CFG.poster;
+  var P = CFG.poster;   /* toujours le cadre le plus haut, voir drawHalo */
   function make(rgb, fn){
     var c = mk(W,H), x = c.getContext('2d'), id = x.createImageData(W,H), p = id.data;
     for (var j=0;j<H;j++) for (var i=0;i<W;i++){
@@ -1997,6 +2039,7 @@ function setExport(on){ ['copy','dlPng','dlJpg'].forEach(function(id){ $(id).dis
 function setPhoto(im, label, id){
   if (id === undefined) loadId++;
   photo = im; view = { zoom:1, px:0.5, py:0.5 };
+  setFrameH(naturalH());   /* le cadre prend le format de l'affiche (plafonné à la hauteur du PSD) */
   $('drop').hidden = true; cv.classList.add('has-photo');
   setExport(true);
   schedule(true); say(label || 'Affiche chargée.', 'ok');
@@ -2130,16 +2173,19 @@ document.addEventListener('paste', function(e){
 /* ---------- Recadrage : glisser, molette, deux doigts ---------- */
 function extent(){
   if (!photo) return null;
-  var iw = photo.naturalWidth || photo.width, ih = photo.naturalHeight || photo.height, pw = poster.width, ph = poster.height;
-  var s = Math.max(pw/iw, ph/ih) * view.zoom;
+  var iw = photo.naturalWidth || photo.width, ih = photo.naturalHeight || photo.height, pw = FR.w, ph = FR.h;
+  var s = photoScale(pw, ph);
   return { ex: Math.max(0, iw*s - pw), ey: Math.max(0, ih*s - ph), s:s };
 }
 function zoomAt(newZoom, cx, cy){
   /* (cx, cy) : point de l'aperçu, en pixels de la story */
-  var e0 = extent(); if (!e0) return;
-  var P = CFG.poster, lx = clamp(cx - P.x, 0, P.w), ly = clamp(cy - P.y, 0, P.h);
+  if (!photo) return;
+  syncFrame(); var e0 = extent();
+  var P = FR, lx = clamp(cx - P.x, 0, P.w), ly = clamp(cy - P.y, 0, P.h);
   var u = (lx + e0.ex*view.px) / e0.s, v = (ly + e0.ey*view.py) / e0.s;
-  view.zoom = clamp(newZoom, 1, 5);
+  view.zoom = clamp(newZoom, 1, 2);   /* zoom maximum 200 % */
+  syncFrame();   /* le cadre grandit ou rétrécit en haut et en bas */
+  lx = clamp(cx - P.x, 0, P.w); ly = clamp(cy - P.y, 0, P.h);   /* même point de l'écran, dans le nouveau cadre */
   var e1 = extent();
   view.px = e1.ex >= 1 ? clamp((u*e1.s - lx)/e1.ex, 0, 1) : 0.5;
   view.py = e1.ey >= 1 ? clamp((v*e1.s - ly)/e1.ey, 0, 1) : 0.5;
@@ -2206,7 +2252,7 @@ $('copy').addEventListener('click', function(){
 });
 
 schedule(true);
-window.__story = { setPhoto:setPhoto, schedule:schedule, compose:function(){ queued = false; compose(); }, hqReady:hqReady, blobOf:blobOf, CFG:CFG, cv:cv, isReady:function(){ return ready; } };
+window.__story = { setPhoto:setPhoto, schedule:schedule, compose:function(){ queued = false; compose(); }, hqReady:hqReady, blobOf:blobOf, CFG:CFG, FR:FR, setFrameH:setFrameH, cv:cv, isReady:function(){ return ready; } };
 /* ---------- Mobile : barre compacte quand le grand aperçu sort de l'écran ----------
    En haut de page : grand aperçu et recadrage (inchangés). Plus bas : une barre fixe avec la miniature. */
 var mini = $('mini'), miniCx = $('miniCv').getContext('2d'), miniOn = false;
