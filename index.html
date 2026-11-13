@@ -1630,16 +1630,20 @@ var W = 1080, H = 1920;
 
 /* ---------- Réglages relevés dans le PSD (pixels sur 1080 × 1920) ---------- */
 var CFG = {
-  /* cadre de l'affiche : gauche et largeur fixes ; la hauteur suit le format de l'affiche chargée,
-     au plus celle du PSD (1246,8 px, affiche 2:3), et le cadre reste centré sur cy (812,1 = 188,7 + 1246,8/2,
-     même centre mesuré sur l'exemple en 120 × 160 : bords 247 et 1376). hMin : format 16:9 (830,12 × 9/16). */
-  poster:  { x:125.44, y:188.7, w:830.12, h:1246.8, cy:812.1, hMin:467 },
+  /* cadre de l'affiche, calé sur des pixels entiers comme l'export Photoshop (le PSD dit x 125,44, l 830,12,
+     mais l'export montre un contour net de 1 px en colonnes 124 et 955 : affiche de 125 à 954 inclus).
+     Gauche et largeur fixes ; la hauteur (entière) suit le format de l'affiche et le zoom, au plus 1247 px
+     (affiche 2:3), et le cadre reste centré : y = arrondi(812,1 − h/2), soit contour en lignes 247 et 1376
+     pour l'exemple 120 × 160 (h 1128), comme dans Photoshop. hMin : format 16:9 (830 × 9/16). */
+  poster:  { x:125, y:189, w:830, h:1247, cy:812.1, hMin:467 },
   bg:      { x:-193.6, y:-129.6, w:1467.2, h:2204.4, sigma:380 },   /* affiche floutée du fond (flou gaussien 300 px) */
   shadow:  { alpha:0.36, fall:106 },     /* ombre douce autour de l'affiche */
   glow:    { alpha:0.18 },/* lueur jaune externe */
   stroke:  { color:'#fecc00' },                             /* contour 1 px */
   textSh:  { alpha:0.50, sigma:60, color:'rgb(9,18,86)' },
-  box:     { left:150, top:1479, h:94, r:14, stroke:2, pad:79, baseline:1551, cx:542, boxCx:540, maxW:960, size:65, color:'#fecc00' },
+  box:     { left:150, top:1479, h:94, r:14, stroke:2, pad:79, baseline:1551, cx:542, boxCx:540, maxW:960, size:65, color:'#fecc00', ls:0, ws:-0.5 },
+  /* ws : espace entre les mots réduit de 0,5 px, mesuré sur l'export Photoshop « ACTUELLEMENT AU CINÉMA » :
+     centre des lettres à 0,6 px près en moyenne (1,1 px sans ce réglage), cadre 150-929 comme dans Photoshop */
   copy:    { size:15.5, baseline:1893, cx:541, alpha:0.25, maxW:1040, maxLines:3, pitch:18 },   /* 3 lignes max, interligne 18 px */
   /* profil de la lueur : distance au bord de l'affiche (px) -> opacité */
   tab:     [[0,1],[3,1],[7,.92],[15,.8],[25,.61],[45,.35],[85,.08],[125,.02],[150,0]],
@@ -1732,8 +1736,8 @@ var poster = mk(Math.round(FR.w), Math.round(FR.h));   /* affiche recadrée : se
 /* Hauteur du cadre : bornée entre hMin et la hauteur du PSD, toujours centrée sur cy */
 function setFrameH(h){
   var C = CFG.poster;
-  FR.h = clamp(+h || C.h, C.hMin, C.h); FR.y = C.cy - FR.h/2;
-  var ph = Math.round(FR.h); if (poster.height !== ph) poster.height = ph;
+  FR.h = Math.round(clamp(+h || C.h, C.hMin, C.h)); FR.y = Math.round(C.cy - FR.h/2);   /* pixels entiers : contour net */
+  if (poster.height !== FR.h) poster.height = FR.h;
 }
 /* Échelle de l'affiche : sa largeur suit la largeur du cadre × zoom. Le cadre grandit en hauteur avec elle
    (syncFrame), donc rien n'est rogné en haut et en bas tant que le cadre n'a pas atteint la hauteur du PSD ;
@@ -1917,10 +1921,10 @@ function tabAt(d){
    de (hauteur max − hauteur)/2. Le long des côtés les deux moitiés sont identiques (seule compte la
    distance horizontale), donc la jonction à y = 812 est invisible et la lueur garde le même profil. */
 function drawHalo(c){
-  var d = (CFG.poster.h - FR.h)/2, cy = Math.round(CFG.poster.cy);
-  if (d < 0.01){ ctx.drawImage(c,0,0); return; }
-  ctx.save(); ctx.beginPath(); ctx.rect(0,0,W,cy); ctx.clip(); ctx.drawImage(c,0,d); ctx.restore();
-  ctx.save(); ctx.beginPath(); ctx.rect(0,cy,W,H-cy); ctx.clip(); ctx.drawImage(c,0,-d); ctx.restore();
+  var C = CFG.poster, dt = FR.y - C.y, db = (FR.y + FR.h) - (C.y + C.h), cy = Math.round(C.cy);   /* décalages entiers */
+  if (!dt && !db){ ctx.drawImage(c,0,0); return; }
+  ctx.save(); ctx.beginPath(); ctx.rect(0,0,W,cy); ctx.clip(); ctx.drawImage(c,0,dt); ctx.restore();
+  ctx.save(); ctx.beginPath(); ctx.rect(0,cy,W,H-cy); ctx.clip(); ctx.drawImage(c,0,db); ctx.restore();
 }
 function buildHalo(){
   var P = CFG.poster;   /* toujours le cadre le plus haut, voir drawHalo */
@@ -1966,27 +1970,56 @@ function copyFits(t){
   var L = copyLines(t);
   return L.length <= CFG.copy.maxLines && L.every(function(l){ return copyWidth(l) <= CFG.copy.maxW; });
 }
+/* police du cartouche + approche (ls) et espace en plus (ws), en px du format, × k pour le rendu agrandi */
+function boxFont(g, k){
+  var B = CFG.box; k = k || 1;
+  g.font = '500 ' + (B.size*k) + 'px ' + FONT;
+  if ('letterSpacing' in g){ g.letterSpacing = (B.ls*k) + 'px'; g.wordSpacing = (B.ws*k) + 'px'; }
+}
+/* largeur d'encre-avance du texte, sans l'approche ajoutée après la dernière lettre */
+function boxTextW(g, str){ boxFont(g); return g.measureText(str).width - ('letterSpacing' in g ? CFG.box.ls : 0); }
 function boxWidth(str){
-  var x = txt.layer.getContext('2d'); x.font = '500 ' + CFG.box.size + 'px ' + FONT;
-  return x.measureText(str).width + CFG.box.pad;
+  return boxTextW(txt.layer.getContext('2d'), str) + CFG.box.pad;
+}
+/* Texte du cartouche dessiné 4 fois plus grand puis réduit par moyenne de blocs 4 × 4 :
+   Chrome sous Windows arrondit la position de chaque lettre au pixel entier (espaces irréguliers
+   de ±1 px) ; à 4× l'arrondi tombe au quart de pixel et la réduction donne des bords adoucis
+   comme dans Photoshop, qui place les lettres au dixième de pixel. */
+var SS = 4;
+function textSS(str, size, color, cx, baseline){
+  var tw = boxTextW(mk(4,4).getContext('2d'), str);
+  var x0 = Math.floor(cx - tw/2 - 12), y0 = Math.floor(baseline - size*1.15), w = Math.ceil(tw + 24), h = Math.ceil(size*1.5);
+  var big = mk(w*SS, h*SS), b = big.getContext('2d');
+  boxFont(b, SS); b.textAlign = 'left'; b.textBaseline = 'alphabetic'; b.fillStyle = '#000';
+  b.fillText(str, (cx - tw/2 - x0)*SS, (baseline - y0)*SS);   /* centré sur l'avance, approche finale exclue */
+  var src = b.getImageData(0, 0, w*SS, h*SS).data, out = mk(w, h), o = out.getContext('2d'), id = o.createImageData(w, h), d = id.data;
+  var c = mk(1,1).getContext('2d'); c.fillStyle = color; c.fillRect(0,0,1,1); var rgb = c.getImageData(0,0,1,1).data;
+  for (var j=0;j<h;j++) for (var i=0;i<w;i++){
+    var s = 0;
+    for (var v=0;v<SS;v++){ var row = ((j*SS + v)*w*SS + i*SS)*4 + 3; for (var u=0;u<SS;u++) s += src[row + u*4]; }
+    var k = (j*w + i)*4; d[k] = rgb[0]; d[k+1] = rgb[1]; d[k+2] = rgb[2]; d[k+3] = Math.round(s/(SS*SS));
+  }
+  o.putImageData(id, 0, 0);
+  return { canvas:out, x:x0, y:y0 };
 }
 function buildText(){
   var B = CFG.box, C = CFG.copy, x = txt.layer.getContext('2d');
   x.clearRect(0,0,W,H);
   var str = ($('txt').value || '').trim().toUpperCase(), mask = null;
   if (str){
-    x.font = '500 ' + B.size + 'px ' + FONT; x.textBaseline = 'alphabetic'; x.textAlign = 'center';
-    var tw = x.measureText(str).width, bw = Math.round(tw + B.pad), left = Math.round(B.boxCx - bw/2);
+    var tw = boxTextW(x, str), bw = Math.round(tw + B.pad), left = Math.round(B.boxCx - bw/2);
     mask = mk(W,H); var m = mask.getContext('2d');
+    var tsp = textSS(str, B.size, B.color, B.cx + (left + bw/2 - B.boxCx), B.baseline), ts = tsp.canvas;
     [x, m].forEach(function(g, k){
       g.strokeStyle = B.color; g.fillStyle = B.color; g.lineWidth = B.stroke;
       rr(g, left + B.stroke/2, B.top + B.stroke/2, bw - B.stroke, B.h - B.stroke, B.r - B.stroke/2); g.stroke();
-      g.font = '500 ' + B.size + 'px ' + FONT; g.textAlign = 'center'; g.fillText(str, B.cx + (left + bw/2 - B.boxCx), B.baseline);
+      g.drawImage(ts, tsp.x, tsp.y);
     });
   }
   var cp = ($('cpr').value || '').trim();
   if (cp){
     x.font = copyFont(); x.textAlign = 'center'; x.fillStyle = 'rgba(255,255,255,'+C.alpha+')';
+    if ('letterSpacing' in x){ x.letterSpacing = '0px'; x.wordSpacing = '0px'; }   /* l'approche du cartouche ne s'applique pas au copyright */
     var cl = copyLines(cp);
     cl.forEach(function(l, k){ x.fillText(l, C.cx, C.baseline - (cl.length - 1 - k)*C.pitch); });
   }
